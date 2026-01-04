@@ -92,6 +92,53 @@ Control [Claude Code](https://claude.ai/code) remotely via multiple messaging pl
 
 ## 🚀 Quick Start
 
+### Choose Your Setup
+
+| Setup | Best For | Complexity |
+|-------|----------|------------|
+| **[Simple Setup](#simple-setup-5-min)** | macOS users, lid open | ⭐ Easy |
+| **[Full Setup](#full-setup)** | Linux, lid closed, advanced features | ⭐⭐⭐ Advanced |
+
+---
+
+### Simple Setup (5 min)
+
+For macOS users who work with lid open. No tmux, no ngrok, no webhooks.
+
+```bash
+# 1. Clone and install
+git clone https://github.com/JessyTsui/Claude-Code-Remote.git
+cd Claude-Code-Remote
+npm install
+
+# 2. Create .env with Telegram credentials
+cat > .env << 'EOF'
+TELEGRAM_BOT_TOKEN=your-bot-token-from-botfather
+TELEGRAM_CHAT_ID=your-chat-id
+EOF
+
+# 3. Run setup to configure Claude hooks
+npm run setup
+
+# 4. Start the Telegram bot (uses polling, no ngrok needed)
+node telegram-bot.js
+
+# 5. In another terminal, start Claude normally
+claude
+```
+
+**That's it!** You'll receive Telegram notifications when Claude needs input.
+
+> **Get your credentials:**
+> - Bot token: Message [@BotFather](https://t.me/BotFather) → `/newbot`
+> - Chat ID: Message [@userinfobot](https://t.me/userinfobot) → it replies with your ID
+
+---
+
+### Full Setup
+
+For Linux users, or macOS users who want lid-closed operation or advanced features.
+
 ### 1. Prerequisites
 
 **System Requirements:**
