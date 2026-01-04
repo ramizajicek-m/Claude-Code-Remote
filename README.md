@@ -93,7 +93,22 @@ Control [Claude Code](https://claude.ai/code) remotely via multiple messaging pl
 - **macOS**: Full support. PTY mode (default) or tmux mode.
 - **Linux**: Full support with tmux mode. Set `INJECTION_MODE=tmux`.
 - **Windows (WSL)**: Full support. Run Claude Code in WSL with tmux mode.
-- **Windows (Native)**: Notifications work, but command injection not yet supported. Use WSL for full functionality.
+- **Windows (Native)**: Notifications-only mode. See below.
+
+### Understanding the Two Parts
+
+This app has two functions:
+
+| Function | What it does | Windows Native |
+|----------|--------------|----------------|
+| **Notifications** | Sends Telegram/Email when Claude needs input | ✅ Works |
+| **Command Injection** | Types your reply back into Claude | ❌ Needs WSL |
+
+**Why?** Claude Code runs fine on Windows. But to *send keystrokes* into its terminal, we need tmux (Linux/WSL) or AppleScript (macOS). Windows has no equivalent built-in method.
+
+**Your options on Windows:**
+1. **Notifications-only**: Get alerts, type responses manually (simple)
+2. **Full two-way via WSL**: Run Claude Code inside WSL for remote control (more setup)
 
 ## 🚀 Quick Start
 
@@ -102,7 +117,8 @@ Control [Claude Code](https://claude.ai/code) remotely via multiple messaging pl
 | Setup | Best For | Complexity |
 |-------|----------|------------|
 | **[Simple Setup](#simple-setup-5-min)** | macOS users, lid open | ⭐ Easy |
-| **[Full Setup](#full-setup)** | Linux, lid closed, advanced features | ⭐⭐⭐ Advanced |
+| **[Windows Setup](#windows-setup-notifications-only)** | Windows users (notifications only) | ⭐ Easy |
+| **[Full Setup](#full-setup)** | Linux, WSL, lid closed, two-way control | ⭐⭐⭐ Advanced |
 
 ---
 
@@ -137,6 +153,43 @@ claude
 > **Get your credentials:**
 > - Bot token: Message [@BotFather](https://t.me/BotFather) → `/newbot`
 > - Chat ID: Message [@userinfobot](https://t.me/userinfobot) → it replies with your ID
+
+---
+
+### Windows Setup (Notifications Only)
+
+Get Telegram alerts when Claude needs input. You'll type responses manually in your terminal.
+
+```powershell
+# 1. Install Node.js from https://nodejs.org/ (LTS version)
+
+# 2. Open PowerShell and clone the repo
+git clone https://github.com/JessyTsui/Claude-Code-Remote.git
+cd Claude-Code-Remote
+npm install
+
+# 3. Create .env file
+@"
+TELEGRAM_BOT_TOKEN=your-bot-token-from-botfather
+TELEGRAM_CHAT_ID=your-chat-id
+"@ | Out-File -FilePath .env -Encoding UTF8
+
+# 4. Run setup to configure Claude hooks
+npm run setup
+
+# 5. Start the notification bot
+node telegram-bot.js
+
+# 6. In another terminal, run Claude Code normally
+claude
+```
+
+**How it works:**
+- You get Telegram notifications when Claude asks for input
+- You read what Claude needs, then type your response in the Claude terminal
+- No automatic command injection (that requires WSL)
+
+> **Want full two-way control?** Use [Windows WSL Setup](#windows-wsl-setup) in the Full Setup section below.
 
 ---
 
