@@ -78,17 +78,22 @@ Control [Claude Code](https://claude.ai/code) remotely via multiple messaging pl
 
 ## 💻 Platform Compatibility
 
-| Feature | macOS | Linux | Windows |
-|---------|-------|-------|---------|
-| **Telegram Bot** | ✅ | ✅ | ✅ |
-| **Email (SMTP/IMAP)** | ✅ | ✅ | ✅ |
-| **LINE Bot** | ✅ | ✅ | ✅ |
-| **tmux Injection** | ✅ | ✅ | WSL only |
-| **PTY Mode (AppleScript)** | ✅ | ❌ | ❌ |
-| **Desktop Notifications** | ✅ | Partial | ❌ |
-| **Sound Alerts** | ✅ | ✅ | ❌ |
+| Feature | macOS | Linux | Windows (WSL) | Windows (Native) |
+|---------|-------|-------|---------------|------------------|
+| **Telegram Bot** | ✅ | ✅ | ✅ | ✅ |
+| **Email (SMTP/IMAP)** | ✅ | ✅ | ✅ | ✅ |
+| **LINE Bot** | ✅ | ✅ | ✅ | ✅ |
+| **tmux Injection** | ✅ | ✅ | ✅ | ❌ |
+| **PTY Mode (AppleScript)** | ✅ | ❌ | ❌ | ❌ |
+| **Desktop Notifications** | ✅ | Partial | ❌ | ❌ |
+| **Sound Alerts** | ✅ | ✅ | ✅ | ❌ |
 
-> **Linux/WSL Users**: Use `INJECTION_MODE=tmux` in your `.env` file. The PTY mode with AppleScript is macOS-only.
+### Platform Notes
+
+- **macOS**: Full support. PTY mode (default) or tmux mode.
+- **Linux**: Full support with tmux mode. Set `INJECTION_MODE=tmux`.
+- **Windows (WSL)**: Full support. Run Claude Code in WSL with tmux mode.
+- **Windows (Native)**: Notifications work, but command injection not yet supported. Use WSL for full functionality.
 
 ## 🚀 Quick Start
 
@@ -285,7 +290,7 @@ export CLAUDE_HOOKS_CONFIG=/your/path/to/Claude-Code-Remote/claude-hooks.json
 claude
 ```
 
-#### Linux / WSL (tmux Mode - Required)
+#### Linux (tmux Mode - Required)
 ```bash
 # 1. Install tmux if not already installed
 sudo apt install tmux  # Debian/Ubuntu
@@ -303,6 +308,42 @@ claude
 # 5. Detach from tmux (keeps Claude running)
 # Press: Ctrl+B, then D
 ```
+
+#### Windows (WSL Setup)
+```powershell
+# 1. Install WSL (run in PowerShell as Admin)
+wsl --install -d Ubuntu
+
+# 2. Restart and open Ubuntu from Start Menu
+```
+
+```bash
+# 3. Inside WSL Ubuntu, install dependencies
+sudo apt update
+sudo apt install -y nodejs npm tmux
+
+# 4. Clone and setup
+git clone https://github.com/JessyTsui/Claude-Code-Remote.git
+cd Claude-Code-Remote
+npm install
+
+# 5. Configure .env
+cp .env.example .env
+nano .env  # Add your Telegram credentials + INJECTION_MODE=tmux
+
+# 6. Install Claude Code in WSL
+npm install -g @anthropic-ai/claude-code
+
+# 7. Start tmux session and Claude
+tmux new-session -s claude-session
+claude
+
+# 8. In another WSL terminal, start the bot
+cd Claude-Code-Remote
+node telegram-bot.js
+```
+
+> **Tip**: Use Windows Terminal for better WSL experience. Install from Microsoft Store.
 
 #### tmux Mode (macOS/Linux)
 ```bash
