@@ -20,7 +20,8 @@ class TelegramWebhookHandler {
         this.app = express();
         this.apiBaseUrl = 'https://api.telegram.org';
         this.botUsername = null; // Cache for bot username
-        
+        this.activeTokenPath = path.join(__dirname, '../../../active-token.json');
+
         this._setupMiddleware();
         this._setupRoutes();
     }
@@ -74,7 +75,7 @@ class TelegramWebhookHandler {
         const chatId = message.chat.id;
         const userId = message.from.id;
         const messageText = message.text?.trim();
-        
+
         if (!messageText) return;
 
         // Check if user is authorized
@@ -96,25 +97,57 @@ class TelegramWebhookHandler {
             return;
         }
 
-        // Parse command
+        // Parse /cmd command
         const commandMatch = messageText.match(/^\/cmd\s+([A-Z0-9]{8})\s+(.+)$/i);
-        if (!commandMatch) {
-            // Check if it's a direct command without /cmd prefix
-            const directMatch = messageText.match(/^([A-Z0-9]{8})\s+(.+)$/);
-            if (directMatch) {
-                await this._processCommand(chatId, directMatch[1], directMatch[2]);
-            } else {
-                await this._sendMessage(chatId, 
-                    '❌ Invalid format. Use:\n`/cmd <TOKEN> <command>`\n\nExample:\n`/cmd ABC12345 analyze this code`',
-                    { parse_mode: 'Markdown' });
-            }
+        if (commandMatch) {
+            await this._processCommand(chatId, commandMatch[1].toUpperCase(), commandMatch[2]);
             return;
         }
 
-        const token = commandMatch[1].toUpperCase();
-        const command = commandMatch[2];
+        // Check if it's TOKEN + command format
+        const directMatch = messageText.match(/^([A-Z0-9]{8})\s+(.+)$/);
+        if (directMatch) {
+            await this._processCommand(chatId, directMatch[1].toUpperCase(), directMatch[2]);
+            return;
+        }
 
-        await this._processCommand(chatId, token, command);
+        // Check if replying to a notification message - extract token from buttons
+        if (message.reply_to_message && message.reply_to_message.reply_markup) {
+            const buttons = message.reply_to_message.reply_markup.inline_keyboard;
+            if (buttons && buttons[0] && buttons[0][0]) {
+                const callbackData = buttons[0][0].callback_data;
+                if (callbackData && callbackData.startsWith('quick:')) {
+                    const token = callbackData.split(':')[1];
+                    await this._processCommand(chatId, token, messageText);
+                    return;
+                }
+            }
+        }
+
+        // Try to use active token for direct text input
+        const activeToken = this._getActiveToken();
+        if (activeToken) {
+            await this._processCommand(chatId, activeToken.token, messageText);
+        } else {
+            await this._sendMessage(chatId,
+                '❌ No active session. Wait for a notification or use:\n`/cmd <TOKEN> <command>`',
+                { parse_mode: 'Markdown' });
+        }
+    }
+
+    _getActiveToken() {
+        try {
+            if (fs.existsSync(this.activeTokenPath)) {
+                const data = JSON.parse(fs.readFileSync(this.activeTokenPath, 'utf8'));
+                // Check if token is recent (within 24 hours)
+                if (data.updatedAt && (Date.now() - data.updatedAt) < 86400000) {
+                    return data;
+                }
+            }
+        } catch (e) {
+            this.logger.error('Failed to read active token:', e.message);
+        }
+        return null;
     }
 
     async _processCommand(chatId, token, command) {
@@ -137,15 +170,11 @@ class TelegramWebhookHandler {
         }
 
         try {
-            // Inject command into tmux session
-            const tmuxSession = session.tmuxSession || 'default';
-            await this.injector.injectCommand(command, tmuxSession);
-            
-            // Send confirmation
-            await this._sendMessage(chatId, 
-                `✅ *Command sent successfully*\n\n📝 *Command:* ${command}\n🖥️ *Session:* ${tmuxSession}\n\nClaude is now processing your request...`,
-                { parse_mode: 'Markdown' });
-            
+            // Inject command - use token for PTY mode, tmuxSession for tmux mode
+            const injectionMode = process.env.INJECTION_MODE || 'pty';
+            const sessionRef = injectionMode === 'pty' ? token : (session.tmuxSession || 'default');
+            await this.injector.injectCommand(command, sessionRef);
+
             // Log command execution
             this.logger.info(`Command injected - User: ${chatId}, Token: ${token}, Command: ${command}`);
             
@@ -160,28 +189,34 @@ class TelegramWebhookHandler {
     async _handleCallbackQuery(callbackQuery) {
         const chatId = callbackQuery.message.chat.id;
         const data = callbackQuery.data;
-        
+
         // Answer callback query to remove loading state
         await this._answerCallbackQuery(callbackQuery.id);
-        
+
+        // Handle quick action buttons: quick:TOKEN:command
+        if (data.startsWith('quick:')) {
+            const parts = data.split(':');
+            const token = parts[1];
+            const command = parts.slice(2).join(':');
+            await this._processCommand(chatId, token, command);
+            return;
+        }
+
         if (data.startsWith('personal:')) {
             const token = data.split(':')[1];
-            // Send personal chat command format
             await this._sendMessage(chatId,
-                `📝 *Personal Chat Command Format:*\n\n\`/cmd ${token} <your command>\`\n\n*Example:*\n\`/cmd ${token} please analyze this code\`\n\n💡 *Copy and paste the format above, then add your command!*`,
+                `📝 Just type your message directly - it will be sent to the active session.\n\nOr use: \`/cmd ${token} <command>\``,
                 { parse_mode: 'Markdown' });
         } else if (data.startsWith('group:')) {
             const token = data.split(':')[1];
-            // Send group chat command format with @bot_name
             const botUsername = await this._getBotUsername();
             await this._sendMessage(chatId,
-                `👥 *Group Chat Command Format:*\n\n\`@${botUsername} /cmd ${token} <your command>\`\n\n*Example:*\n\`@${botUsername} /cmd ${token} please analyze this code\`\n\n💡 *Copy and paste the format above, then add your command!*`,
+                `👥 *Group Chat:*\n\n\`@${botUsername} /cmd ${token} <command>\``,
                 { parse_mode: 'Markdown' });
         } else if (data.startsWith('session:')) {
             const token = data.split(':')[1];
-            // For backward compatibility - send help message for old callback buttons
             await this._sendMessage(chatId,
-                `📝 *How to send a command:*\n\nType:\n\`/cmd ${token} <your command>\`\n\nExample:\n\`/cmd ${token} please analyze this code\`\n\n💡 *Tip:* New notifications have a button that auto-fills the command for you!`,
+                `📝 Just type your message directly!\n\nOr: \`/cmd ${token} <command>\``,
                 { parse_mode: 'Markdown' });
         }
     }

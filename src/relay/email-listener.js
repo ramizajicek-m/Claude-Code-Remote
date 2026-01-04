@@ -431,16 +431,57 @@ class EmailListener extends EventEmitter {
             return false;
         }
 
-        // Dangerous command blacklist
+        // Dangerous command blacklist - expanded for better security
         const dangerousPatterns = [
-            /rm\s+-rf/i,
+            // Destructive file operations
+            /rm\s+(-[a-zA-Z]*f|-[a-zA-Z]*r|--force|--recursive)/i,
+            /rm\s+\//i,                    // rm with absolute path
+            /rmdir\s+--ignore-fail/i,
+            />\s*\/etc\//i,                // Overwrite system files
+            />\s*\/dev\//i,                // Write to devices
+
+            // Privilege escalation
             /sudo\s+/i,
-            /chmod\s+777/i,
-            />\s*\/dev\/null/i,
-            /curl.*\|\s*sh/i,
-            /wget.*\|\s*sh/i,
-            /eval\s*\(/i,
-            /exec\s*\(/i
+            /su\s+-/i,
+            /doas\s+/i,
+            /pkexec\s+/i,
+
+            // Dangerous permissions
+            /chmod\s+[0-7]*7[0-7]*/i,      // World writable
+            /chmod\s+[+-]?[rwxs]*s/i,      // Setuid/setgid
+            /chown\s+root/i,
+
+            // Remote code execution
+            /curl.*\|\s*(ba)?sh/i,
+            /wget.*\|\s*(ba)?sh/i,
+            /curl.*-o.*&&.*sh/i,
+            /\beval\s*[\(\`]/i,
+            /\bexec\s*[\(\`]/i,
+            /source\s+<\(/i,               // Process substitution
+            /\$\([^)]*\)/,                 // Command substitution in dangerous context
+
+            // System destructive
+            /mkfs\./i,                     // Format filesystem
+            /dd\s+if=/i,                   // Direct disk access
+            /:\(\)\s*\{\s*:\|:\s*&\s*\}/,  // Fork bomb
+            />\s*\/dev\/sd[a-z]/i,         // Write to disk device
+
+            // Network exfiltration
+            /nc\s+-[a-zA-Z]*e/i,           // Netcat with execute
+            /ncat\s+-[a-zA-Z]*e/i,
+
+            // Cron/persistence
+            /crontab\s+-[re]/i,
+            /\/(etc|var)\/cron/i,
+
+            // SSH key manipulation
+            />\s*~?\/?\.ssh\//i,
+            />>?\s*authorized_keys/i,
+
+            // History/log tampering
+            /history\s+-[cd]/i,
+            />\s*\/var\/log\//i,
+            /unset\s+HISTFILE/i
         ];
 
         for (const pattern of dangerousPatterns) {

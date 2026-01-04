@@ -52,9 +52,9 @@ class TmuxInjector {
             exec(command, (error, stdout, stderr) => {
                 if (error) {
                     this.log.warn(`Failed to create tmux session with clauderun: ${error.message}`);
-                    // If clauderun fails, try using full path command
-                    this.log.info('Fallback to full path command...');
-                    const fallbackCommand = `tmux new-session -d -s ${this.sessionName} -c "${process.cwd()}" /Users/jessytsui/.nvm/versions/node/v18.17.0/bin/claude --dangerously-skip-permissions`;
+                    // If clauderun fails, try using claude from PATH
+                    this.log.info('Fallback to claude from PATH...');
+                    const fallbackCommand = `tmux new-session -d -s ${this.sessionName} -c "${process.cwd()}" claude`;
                     
                     exec(fallbackCommand, (fallbackError) => {
                         if (fallbackError) {

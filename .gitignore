@@ -54,3 +54,14 @@ src/data/
 
 # Claude configuration (user-specific)
 CLAUDE.md
+
+# Runtime session data (auto-generated)
+session-map.json
+active-token.json
+
+# User-specific config (optional override)
+config/telegram-commands.json
+
+# Shell scripts (user-specific)
+*.sh
+!example-*.sh

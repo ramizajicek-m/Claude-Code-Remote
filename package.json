@@ -11,6 +11,7 @@
     "daemon:status": "node claude-remote.js daemon status",
     "relay:pty": "node start-relay-pty.js",
     "relay:start": "INJECTION_MODE=pty node src/relay/relay-pty.js",
+    "bot": "node telegram-bot.js",
     "telegram": "node start-telegram-webhook.js",
     "line": "node start-line-webhook.js",
     "webhooks": "node start-all-webhooks.js"
