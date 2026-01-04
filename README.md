@@ -76,14 +76,29 @@ Control [Claude Code](https://claude.ai/code) remotely via multiple messaging pl
 - **📱 Mobile Apps** - iOS and Android applications for remote Claude control
 - **🖥️ Desktop Apps** - macOS and Windows native clients with system integration
 
+## 💻 Platform Compatibility
+
+| Feature | macOS | Linux | Windows |
+|---------|-------|-------|---------|
+| **Telegram Bot** | ✅ | ✅ | ✅ |
+| **Email (SMTP/IMAP)** | ✅ | ✅ | ✅ |
+| **LINE Bot** | ✅ | ✅ | ✅ |
+| **tmux Injection** | ✅ | ✅ | WSL only |
+| **PTY Mode (AppleScript)** | ✅ | ❌ | ❌ |
+| **Desktop Notifications** | ✅ | Partial | ❌ |
+| **Sound Alerts** | ✅ | ✅ | ❌ |
+
+> **Linux/WSL Users**: Use `INJECTION_MODE=tmux` in your `.env` file. The PTY mode with AppleScript is macOS-only.
+
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
 
 **System Requirements:**
 - Node.js >= 14.0.0
-- For default PTY mode: no tmux required (recommended for本地直接用)
-- For tmux mode: tmux + an active session with Claude Code running
+- **macOS**: PTY mode (default) or tmux mode
+- **Linux**: tmux mode required (`INJECTION_MODE=tmux`)
+- **Windows**: WSL with tmux mode
 
 ### 2. Install
 
@@ -215,18 +230,42 @@ export CLAUDE_HOOKS_CONFIG=/your/path/to/Claude-Code-Remote/claude-hooks.json
 
 > **Note**: Subagent notifications are disabled by default. To enable them, set `enableSubagentNotifications: true` in your config. See [Subagent Notifications Guide](./docs/SUBAGENT_NOTIFICATIONS.md) for details.
 
-### 5. 启动 Claude（按你的注入模式选择）
+### 5. Start Claude Session
 
-- **默认 PTY 模式（无需 tmux）**：直接在终端运行 `claude-code --config /path/to/your/claude/settings.json`
-- **如果你选择 tmux 模式**：
-  ```bash
-  tmux new-session -d -s claude-session
-  tmux attach-session -t claude-session
-  claude-code --config /path/to/your/claude/settings.json
-  ```
-  > Detach: Ctrl+B 然后 D
+#### macOS (PTY Mode - Default)
+```bash
+# Just run Claude directly - no tmux needed
+claude
+```
 
-> **Note**: Interactive setup 已合并 hooks 到 `~/.claude/settings.json`。若跳过，请确保手动配置 hooks。
+#### Linux / WSL (tmux Mode - Required)
+```bash
+# 1. Install tmux if not already installed
+sudo apt install tmux  # Debian/Ubuntu
+sudo yum install tmux  # RHEL/CentOS
+
+# 2. Set injection mode in .env
+echo "INJECTION_MODE=tmux" >> .env
+
+# 3. Create and attach to tmux session
+tmux new-session -s claude-session
+
+# 4. Inside tmux, start Claude
+claude
+
+# 5. Detach from tmux (keeps Claude running)
+# Press: Ctrl+B, then D
+```
+
+#### tmux Mode (macOS/Linux)
+```bash
+tmux new-session -d -s claude-session
+tmux attach-session -t claude-session
+claude
+```
+> Detach: Ctrl+B then D
+
+> **Note**: Interactive setup merges hooks into `~/.claude/settings.json`. If skipped, configure hooks manually.
 
 ### 6. Start Services
 
@@ -434,6 +473,23 @@ grep INJECTION_MODE .env  # Should be 'tmux'
 
 # Test injection
 node test-injection.js
+```
+
+**Linux: tmux injection not working?**
+```bash
+# 1. Verify tmux is installed
+tmux -V
+
+# 2. Check session name matches
+tmux list-sessions
+# Should show: claude-session: 1 windows ...
+
+# 3. Verify INJECTION_MODE is set
+grep INJECTION_MODE .env
+# Must be: INJECTION_MODE=tmux
+
+# 4. Test sending keys manually
+tmux send-keys -t claude-session "echo test" Enter
 ```
 
 **Not receiving emails?**
