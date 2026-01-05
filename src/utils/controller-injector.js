@@ -1,18 +1,33 @@
 /**
  * Controller Injector
  * Injects commands into tmux sessions or PTY
+ * Security-hardened version using execFileSync instead of shell string interpolation
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const Logger = require('../core/logger');
+const {
+    validateCommand,
+    safeParseJSON,
+    escapeForAppleScript,
+    RateLimiter,
+    MAX_COMMAND_LENGTH,
+    RATE_LIMIT_WINDOW_MS,
+    RATE_LIMIT_MAX_COMMANDS
+} = require('./webhook-utils');
 
 class ControllerInjector {
     constructor(config = {}) {
         this.logger = new Logger('ControllerInjector');
         this.mode = config.mode || process.env.INJECTION_MODE || 'pty';
         this.defaultSession = config.defaultSession || process.env.TMUX_SESSION || 'claude-code';
+        this.sessionMapPath = process.env.SESSION_MAP_PATH ||
+                              path.join(__dirname, '../../session-map.json');
+
+        // Rate limiting
+        this.rateLimiter = new RateLimiter(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_COMMANDS);
     }
 
     /**
@@ -33,44 +48,79 @@ class ControllerInjector {
         return sanitized;
     }
 
-    /**
-     * Escape string for AppleScript
-     */
-    _escapeForAppleScript(str) {
-        return str
-            .replace(/\\/g, '\\\\')
-            .replace(/"/g, '\\"')
-            .replace(/\n/g, '\\n')
-            .replace(/\r/g, '\\r')
-            .replace(/\t/g, '\\t');
-    }
-
     async injectCommand(command, sessionName = null) {
+        const validation = validateCommand(command);
+        if (!validation.valid) {
+            throw new Error(validation.error);
+        }
+
+        const validatedCommand = validation.command;
         const session = this._sanitizeSessionName(sessionName || this.defaultSession);
 
-        if (this.mode === 'tmux') {
-            return this._injectTmux(command, session);
-        } else {
-            return this._injectPty(command, session);
+        // Check rate limit
+        if (!this.rateLimiter.checkAndRecord(session)) {
+            throw new Error(`Rate limit exceeded for session '${session}'. Please wait before sending more commands.`);
         }
+
+        if (this.mode === 'tmux') {
+            return this._injectTmux(validatedCommand, session);
+        } else {
+            return this._injectPty(validatedCommand, session);
+        }
+    }
+
+    /**
+     * Check if tmux session exists using execFileSync
+     * @param {string} sessionName - Sanitized session name
+     * @returns {boolean}
+     */
+    _tmuxSessionExists(sessionName) {
+        try {
+            execFileSync('tmux', ['has-session', '-t', sessionName], {
+                stdio: 'ignore',
+                timeout: 5000
+            });
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    /**
+     * Send keys to tmux session using execFileSync
+     * @param {string} sessionName - Sanitized session name
+     * @param {string} keys - Keys to send
+     */
+    _tmuxSendKeys(sessionName, keys) {
+        execFileSync('tmux', ['send-keys', '-t', sessionName, keys], {
+            timeout: 5000
+        });
+    }
+
+    /**
+     * Send literal keys to tmux session
+     * @param {string} sessionName - Sanitized session name
+     * @param {string} key - Key name (e.g., 'Enter')
+     */
+    _tmuxSendLiteralKey(sessionName, key) {
+        execFileSync('tmux', ['send-keys', '-t', sessionName, key], {
+            timeout: 5000
+        });
     }
 
     _injectTmux(command, sessionName) {
         try {
-            // Check if tmux session exists (sessionName already sanitized)
-            try {
-                execSync(`tmux has-session -t "${sessionName}"`, { stdio: 'ignore' });
-            } catch (error) {
+            // Check if tmux session exists
+            if (!this._tmuxSessionExists(sessionName)) {
                 throw new Error(`Tmux session '${sessionName}' not found`);
             }
 
-            // Send command to tmux session and execute it
-            const escapedCommand = command.replace(/'/g, "'\\''");
+            // Send command to tmux session
+            // Using send-keys with the command as a single argument (safe)
+            this._tmuxSendKeys(sessionName, command);
 
-            // Send command first
-            execSync(`tmux send-keys -t "${sessionName}" '${escapedCommand}'`);
-            // Then send Enter as separate command
-            execSync(`tmux send-keys -t "${sessionName}" Enter`);
+            // Send Enter as separate command
+            this._tmuxSendLiteralKey(sessionName, 'Enter');
 
             this.logger.info(`Command injected to tmux session '${sessionName}'`);
             return true;
@@ -82,14 +132,12 @@ class ControllerInjector {
 
     _injectPty(command, sessionName) {
         // Get PTY path from session map
-        const sessionMapPath = process.env.SESSION_MAP_PATH ||
-                               path.join(__dirname, '../../session-map.json');
-
         let ptyPath = null;
 
-        if (fs.existsSync(sessionMapPath)) {
-            const sessionMap = JSON.parse(fs.readFileSync(sessionMapPath, 'utf8'));
-            if (sessionMap[sessionName] && sessionMap[sessionName].ptyPath) {
+        if (fs.existsSync(this.sessionMapPath)) {
+            const content = fs.readFileSync(this.sessionMapPath, 'utf8');
+            const sessionMap = safeParseJSON(content);
+            if (sessionMap && sessionMap[sessionName] && sessionMap[sessionName].ptyPath) {
                 ptyPath = sessionMap[sessionName].ptyPath;
             }
         }
@@ -100,8 +148,8 @@ class ControllerInjector {
 
         // Send to iTerm2 via AppleScript
         const ttyName = ptyPath.replace('/dev/', '');
-        const escapedCommand = this._escapeForAppleScript(command);
-        const escapedTtyName = this._escapeForAppleScript(ttyName);
+        const escapedCommand = escapeForAppleScript(command);
+        const escapedTtyName = escapeForAppleScript(ttyName);
 
         const script = `
             tell application "iTerm2"
@@ -127,7 +175,8 @@ class ControllerInjector {
             end tell
         `;
 
-        const result = execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
+        // Use execFileSync with osascript to avoid shell injection
+        const result = execFileSync('osascript', ['-e', script], {
             encoding: 'utf8',
             timeout: 5000
         }).trim();
@@ -143,7 +192,7 @@ class ControllerInjector {
     listSessions() {
         if (this.mode === 'tmux') {
             try {
-                const output = execSync('tmux list-sessions -F "#{session_name}"', { 
+                const output = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
                     encoding: 'utf8',
                     stdio: ['ignore', 'pipe', 'ignore']
                 });
@@ -153,16 +202,15 @@ class ControllerInjector {
             }
         } else {
             try {
-                const sessionMapPath = process.env.SESSION_MAP_PATH || 
-                                       path.join(__dirname, '../data/session-map.json');
-                
-                if (!fs.existsSync(sessionMapPath)) {
+                if (!fs.existsSync(this.sessionMapPath)) {
                     return [];
                 }
 
-                const sessionMap = JSON.parse(fs.readFileSync(sessionMapPath, 'utf8'));
-                return Object.keys(sessionMap);
+                const content = fs.readFileSync(this.sessionMapPath, 'utf8');
+                const sessionMap = safeParseJSON(content);
+                return sessionMap ? Object.keys(sessionMap) : [];
             } catch (error) {
+                this.logger.error(`Failed to list sessions: ${error.message}`);
                 return [];
             }
         }

@@ -4,12 +4,22 @@
  */
 
 const express = require('express');
-const crypto = require('crypto');
 const axios = require('axios');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs').promises;
 const Logger = require('../../core/logger');
 const ControllerInjector = require('../../utils/controller-injector');
+const {
+    validateToken,
+    validateCommand,
+    parseCallbackData,
+    findSessionByToken,
+    isSessionExpired,
+    removeSession,
+    safeParseJSON,
+    verifyTelegramSecret,
+    SESSION_EXPIRY_MS
+} = require('../../utils/webhook-utils');
 
 class TelegramWebhookHandler {
     constructor(config = {}) {
@@ -55,15 +65,28 @@ class TelegramWebhookHandler {
 
     async _handleWebhook(req, res) {
         try {
+            // Verify webhook secret token if configured
+            const secretToken = req.headers['x-telegram-bot-api-secret-token'];
+            if (!verifyTelegramSecret(secretToken, this.config.webhookSecretToken)) {
+                this.logger.warn('Invalid Telegram webhook secret token');
+                return res.status(401).send('Unauthorized');
+            }
+
             const update = req.body;
-            
+
+            // Validate update structure
+            if (!update || typeof update !== 'object') {
+                this.logger.warn('Invalid webhook payload');
+                return res.status(400).send('Bad Request');
+            }
+
             // Handle different update types
             if (update.message) {
                 await this._handleMessage(update.message);
             } else if (update.callback_query) {
                 await this._handleCallbackQuery(update.callback_query);
             }
-            
+
             res.status(200).send('OK');
         } catch (error) {
             this.logger.error('Webhook handling error:', error.message);
@@ -76,7 +99,9 @@ class TelegramWebhookHandler {
         const userId = message.from.id;
         const messageText = message.text?.trim();
 
-        if (!messageText) return;
+        if (!messageText) {
+            return;
+        }
 
         // Check if user is authorized
         if (!this._isAuthorized(userId, chatId)) {
@@ -117,15 +142,17 @@ class TelegramWebhookHandler {
             if (buttons && buttons[0] && buttons[0][0]) {
                 const callbackData = buttons[0][0].callback_data;
                 if (callbackData && callbackData.startsWith('quick:')) {
-                    const token = callbackData.split(':')[1];
-                    await this._processCommand(chatId, token, messageText);
-                    return;
+                    const parsed = parseCallbackData(callbackData);
+                    if (parsed.token) {
+                        await this._processCommand(chatId, parsed.token, messageText);
+                        return;
+                    }
                 }
             }
         }
 
         // Try to use active token for direct text input
-        const activeToken = this._getActiveToken();
+        const activeToken = await this._getActiveToken();
         if (activeToken) {
             await this._processCommand(chatId, activeToken.token, messageText);
         } else {
@@ -135,88 +162,123 @@ class TelegramWebhookHandler {
         }
     }
 
-    _getActiveToken() {
+    async _getActiveToken() {
         try {
-            if (fs.existsSync(this.activeTokenPath)) {
-                const data = JSON.parse(fs.readFileSync(this.activeTokenPath, 'utf8'));
-                // Check if token is recent (within 24 hours)
-                if (data.updatedAt && (Date.now() - data.updatedAt) < 86400000) {
-                    return data;
-                }
+            await fs.access(this.activeTokenPath);
+            const content = await fs.readFile(this.activeTokenPath, 'utf8');
+            const data = safeParseJSON(content);
+            // Check if token is recent (within 24 hours)
+            if (data && data.updatedAt && (Date.now() - data.updatedAt) < SESSION_EXPIRY_MS) {
+                return data;
             }
         } catch (e) {
-            this.logger.error('Failed to read active token:', e.message);
+            // File doesn't exist or can't be read - that's fine
+            if (e.code !== 'ENOENT') {
+                this.logger.error('Failed to read active token:', e.message);
+            }
         }
         return null;
     }
 
     async _processCommand(chatId, token, command) {
+        // Validate token format
+        const validToken = validateToken(token);
+        if (!validToken) {
+            await this._sendMessage(chatId,
+                '❌ Invalid token format.',
+                { parse_mode: 'Markdown' });
+            return;
+        }
+
+        // Validate command
+        const commandValidation = validateCommand(command);
+        if (!commandValidation.valid) {
+            await this._sendMessage(chatId,
+                `❌ Invalid command: ${commandValidation.error}`,
+                { parse_mode: 'Markdown' });
+            return;
+        }
+
         // Find session by token
-        const session = await this._findSessionByToken(token);
+        const session = await findSessionByToken(validToken, this.sessionsDir, this.logger);
         if (!session) {
-            await this._sendMessage(chatId, 
+            await this._sendMessage(chatId,
                 '❌ Invalid or expired token. Please wait for a new task notification.',
                 { parse_mode: 'Markdown' });
             return;
         }
 
         // Check if session is expired
-        if (session.expiresAt < Math.floor(Date.now() / 1000)) {
-            await this._sendMessage(chatId, 
+        if (isSessionExpired(session)) {
+            await this._sendMessage(chatId,
                 '❌ Token has expired. Please wait for a new task notification.',
                 { parse_mode: 'Markdown' });
-            await this._removeSession(session.id);
+            await removeSession(session.id, this.sessionsDir, this.logger);
             return;
         }
 
         try {
             // Inject command - use token for PTY mode, tmuxSession for tmux mode
             const injectionMode = process.env.INJECTION_MODE || 'pty';
-            const sessionRef = injectionMode === 'pty' ? token : (session.tmuxSession || 'default');
-            await this.injector.injectCommand(command, sessionRef);
+            const sessionRef = injectionMode === 'pty' ? validToken : (session.tmuxSession || 'default');
+            await this.injector.injectCommand(commandValidation.command, sessionRef);
 
             // Log command execution
-            this.logger.info(`Command injected - User: ${chatId}, Token: ${token}, Command: ${command}`);
-            
+            this.logger.info(`Command injected - User: ${chatId}, Token: ${validToken}, Command: ${commandValidation.command}`);
+
         } catch (error) {
             this.logger.error('Command injection failed:', error.message);
-            await this._sendMessage(chatId, 
+            await this._sendMessage(chatId,
                 `❌ *Command execution failed:* ${error.message}`,
                 { parse_mode: 'Markdown' });
         }
     }
 
     async _handleCallbackQuery(callbackQuery) {
-        const chatId = callbackQuery.message.chat.id;
+        const chatId = callbackQuery.message?.chat?.id;
         const data = callbackQuery.data;
+
+        if (!chatId) {
+            this.logger.warn('Callback query missing chat ID');
+            return;
+        }
 
         // Answer callback query to remove loading state
         await this._answerCallbackQuery(callbackQuery.id);
 
-        // Handle quick action buttons: quick:TOKEN:command
-        if (data.startsWith('quick:')) {
-            const parts = data.split(':');
-            const token = parts[1];
-            const command = parts.slice(2).join(':');
-            await this._processCommand(chatId, token, command);
+        // Parse callback data safely
+        const parsed = parseCallbackData(data);
+
+        if (!parsed.prefix) {
+            this.logger.warn('Invalid callback data format');
             return;
         }
 
-        if (data.startsWith('personal:')) {
-            const token = data.split(':')[1];
+        // Handle quick action buttons: quick:TOKEN:command
+        if (parsed.prefix === 'quick') {
+            if (!parsed.token) {
+                this.logger.warn('Quick action missing valid token');
+                return;
+            }
+            if (parsed.command) {
+                await this._processCommand(chatId, parsed.token, parsed.command);
+            }
+            return;
+        }
+
+        // Handle info buttons
+        if (parsed.prefix === 'personal' && parsed.token) {
             await this._sendMessage(chatId,
-                `📝 Just type your message directly - it will be sent to the active session.\n\nOr use: \`/cmd ${token} <command>\``,
+                `📝 Just type your message directly - it will be sent to the active session.\n\nOr use: \`/cmd ${parsed.token} <command>\``,
                 { parse_mode: 'Markdown' });
-        } else if (data.startsWith('group:')) {
-            const token = data.split(':')[1];
+        } else if (parsed.prefix === 'group' && parsed.token) {
             const botUsername = await this._getBotUsername();
             await this._sendMessage(chatId,
-                `👥 *Group Chat:*\n\n\`@${botUsername} /cmd ${token} <command>\``,
+                `👥 *Group Chat:*\n\n\`@${botUsername} /cmd ${parsed.token} <command>\``,
                 { parse_mode: 'Markdown' });
-        } else if (data.startsWith('session:')) {
-            const token = data.split(':')[1];
+        } else if (parsed.prefix === 'session' && parsed.token) {
             await this._sendMessage(chatId,
-                `📝 Just type your message directly!\n\nOr: \`/cmd ${token} <command>\``,
+                `📝 Just type your message directly!\n\nOr: \`/cmd ${parsed.token} <command>\``,
                 { parse_mode: 'Markdown' });
         }
     }
@@ -289,34 +351,6 @@ class TelegramWebhookHandler {
         return this.config.botUsername || 'claude_remote_bot';
     }
 
-    async _findSessionByToken(token) {
-        const files = fs.readdirSync(this.sessionsDir);
-        
-        for (const file of files) {
-            if (!file.endsWith('.json')) continue;
-            
-            const sessionPath = path.join(this.sessionsDir, file);
-            try {
-                const session = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
-                if (session.token === token) {
-                    return session;
-                }
-            } catch (error) {
-                this.logger.error(`Failed to read session file ${file}:`, error.message);
-            }
-        }
-        
-        return null;
-    }
-
-    async _removeSession(sessionId) {
-        const sessionFile = path.join(this.sessionsDir, `${sessionId}.json`);
-        if (fs.existsSync(sessionFile)) {
-            fs.unlinkSync(sessionFile);
-            this.logger.debug(`Session removed: ${sessionId}`);
-        }
-    }
-
     async _sendMessage(chatId, text, options = {}) {
         try {
             await axios.post(
@@ -350,12 +384,19 @@ class TelegramWebhookHandler {
 
     async setWebhook(webhookUrl) {
         try {
+            const webhookConfig = {
+                url: webhookUrl,
+                allowed_updates: ['message', 'callback_query']
+            };
+
+            // Add secret token if configured
+            if (this.config.webhookSecretToken) {
+                webhookConfig.secret_token = this.config.webhookSecretToken;
+            }
+
             const response = await axios.post(
                 `${this.apiBaseUrl}/bot${this.config.botToken}/setWebhook`,
-                {
-                    url: webhookUrl,
-                    allowed_updates: ['message', 'callback_query']
-                },
+                webhookConfig,
                 this._getNetworkOptions()
             );
 

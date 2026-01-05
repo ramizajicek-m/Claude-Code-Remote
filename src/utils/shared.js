@@ -6,7 +6,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 /**
  * Generate a cryptographically secure token
@@ -155,6 +155,67 @@ function writeSessionMap(mapPath, data) {
     fs.renameSync(tempPath, mapPath);
 }
 
+/**
+ * Get current tmux session name
+ * @returns {string|null} Session name or null if not in tmux
+ */
+function getCurrentTmuxSession() {
+    try {
+        const tmuxSession = execFileSync('tmux', ['display-message', '-p', '#S'], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
+        return tmuxSession || null;
+    } catch (error) {
+        // Not in a tmux session or tmux not available
+        return null;
+    }
+}
+
+/**
+ * Check if tmux is available on the system
+ * @returns {boolean} True if tmux is available
+ */
+function isTmuxAvailable() {
+    try {
+        execFileSync('which', ['tmux'], {
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+        });
+        return true;
+    } catch (error) {
+        return false;
+    }
+}
+
+/**
+ * Escape string for AppleScript (used for osascript)
+ * @param {string} str - String to escape
+ * @returns {string} Escaped string safe for AppleScript
+ */
+function escapeForAppleScript(str) {
+    if (!str) return '';
+    return str
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r')
+        .replace(/\t/g, '\\t');
+}
+
+/**
+ * Sanitize tmux session name - remove dangerous characters
+ * @param {string} name - Session name to sanitize
+ * @returns {string} Sanitized session name
+ */
+function sanitizeSessionName(name) {
+    if (!name || typeof name !== 'string') {
+        return '';
+    }
+    // Remove dangerous shell characters: ; ` $ ( ) | & < > newlines
+    return name.replace(/[;`$()|\n\r&<>]/g, '');
+}
+
 module.exports = {
     generateToken,
     findSessionByToken,
@@ -163,5 +224,9 @@ module.exports = {
     sanitizeForShell,
     escapeShellArg,
     readSessionMap,
-    writeSessionMap
+    writeSessionMap,
+    getCurrentTmuxSession,
+    isTmuxAvailable,
+    escapeForAppleScript,
+    sanitizeSessionName
 };

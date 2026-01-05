@@ -2,13 +2,66 @@
 /**
  * Claude Code Remote - Telegram Bot (Long Polling)
  * No ngrok required - polls Telegram directly
+ * Security-hardened version using execFileSync
  */
 
 require('dotenv').config();
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const {
+    validateToken,
+    validateCommand,
+    parseCallbackData,
+    safeParseJSON,
+    escapeForAppleScript,
+    SESSION_EXPIRY_MS
+} = require('./src/utils/webhook-utils');
+
+/**
+ * Validate required environment variables at startup
+ */
+function validateEnv() {
+    const required = [
+        { name: 'TELEGRAM_BOT_TOKEN', description: 'Telegram bot token from @BotFather' },
+        { name: 'TELEGRAM_CHAT_ID', description: 'Your Telegram chat ID' }
+    ];
+
+    const missing = [];
+    const invalid = [];
+
+    for (const { name, description } of required) {
+        const value = process.env[name];
+        if (!value) {
+            missing.push(`  - ${name}: ${description}`);
+        } else if (name === 'TELEGRAM_BOT_TOKEN' && !value.includes(':')) {
+            invalid.push(`  - ${name}: Invalid format (should contain ':')`);
+        } else if (name === 'TELEGRAM_CHAT_ID' && !/^-?\d+$/.test(value)) {
+            invalid.push(`  - ${name}: Invalid format (should be a number)`);
+        }
+    }
+
+    if (missing.length > 0 || invalid.length > 0) {
+        console.error('\n❌ Configuration Error:\n');
+
+        if (missing.length > 0) {
+            console.error('Missing required environment variables:');
+            console.error(missing.join('\n'));
+        }
+
+        if (invalid.length > 0) {
+            console.error('\nInvalid environment variables:');
+            console.error(invalid.join('\n'));
+        }
+
+        console.error('\n📝 Create a .env file with these variables, or run: npm run setup\n');
+        process.exit(1);
+    }
+}
+
+// Validate environment before proceeding
+validateEnv();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -90,7 +143,8 @@ function log(msg) {
 
 function loadSessionMap() {
     if (fs.existsSync(SESSION_MAP_PATH)) {
-        return JSON.parse(fs.readFileSync(SESSION_MAP_PATH, 'utf8'));
+        const content = fs.readFileSync(SESSION_MAP_PATH, 'utf8');
+        return safeParseJSON(content, {});
     }
     return {};
 }
@@ -98,12 +152,15 @@ function loadSessionMap() {
 function getActiveToken() {
     try {
         if (fs.existsSync(ACTIVE_TOKEN_PATH)) {
-            const data = JSON.parse(fs.readFileSync(ACTIVE_TOKEN_PATH, 'utf8'));
-            if (data.updatedAt && (Date.now() - data.updatedAt) < 86400000) {
+            const content = fs.readFileSync(ACTIVE_TOKEN_PATH, 'utf8');
+            const data = safeParseJSON(content);
+            if (data && data.updatedAt && (Date.now() - data.updatedAt) < SESSION_EXPIRY_MS) {
                 return data;
             }
         }
-    } catch (e) {}
+    } catch (e) {
+        log(`Error reading active token: ${e.message}`);
+    }
     return null;
 }
 
@@ -149,28 +206,58 @@ function injectCommand(token, command) {
     return injectViaAppleScript(session.ptyPath, command);
 }
 
-function injectViaTmux(sessionName, command) {
-    const escapedCommand = command.replace(/'/g, "'\"'\"'");
+/**
+ * Sanitize session name to prevent command injection
+ * Only allows alphanumeric, dash, underscore
+ */
+function sanitizeSessionName(name) {
+    if (!name || typeof name !== 'string') {
+        throw new Error('Invalid session name');
+    }
+    const sanitized = name.replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!sanitized) {
+        throw new Error('Session name contains no valid characters');
+    }
+    return sanitized;
+}
 
-    // Check if tmux session exists
+function injectViaTmux(sessionName, command) {
+    // Sanitize session name
+    const sanitizedSession = sanitizeSessionName(sessionName);
+
+    // Check if tmux session exists using execFileSync (safe)
     try {
-        execSync(`tmux has-session -t '${sessionName}' 2>/dev/null`, { encoding: 'utf8' });
+        execFileSync('tmux', ['has-session', '-t', sanitizedSession], {
+            stdio: 'ignore',
+            timeout: 5000
+        });
     } catch (e) {
-        throw new Error(`Tmux session not found: ${sessionName}`);
+        throw new Error(`Tmux session not found: ${sanitizedSession}`);
     }
 
-    // Clear current input, send command, press Enter
-    execSync(`tmux send-keys -t '${sessionName}' C-u`, { encoding: 'utf8', timeout: 2000 });
-    execSync(`tmux send-keys -t '${sessionName}' '${escapedCommand}'`, { encoding: 'utf8', timeout: 2000 });
-    execSync(`tmux send-keys -t '${sessionName}' C-m`, { encoding: 'utf8', timeout: 2000 });
+    // Clear current input using execFileSync (safe)
+    execFileSync('tmux', ['send-keys', '-t', sanitizedSession, 'C-u'], {
+        timeout: 2000
+    });
 
-    log(`Tmux inject to ${sessionName}: ${command}`);
+    // Send command as a single argument (safe, no shell interpolation)
+    execFileSync('tmux', ['send-keys', '-t', sanitizedSession, command], {
+        timeout: 2000
+    });
+
+    // Press Enter
+    execFileSync('tmux', ['send-keys', '-t', sanitizedSession, 'C-m'], {
+        timeout: 2000
+    });
+
+    log(`Tmux inject to ${sanitizedSession}: ${command}`);
     return true;
 }
 
 function injectViaAppleScript(ptyPath, command) {
     const ttyName = ptyPath.replace('/dev/', '');
-    const escapedCommand = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const escapedCommand = escapeForAppleScript(command);
+    const escapedTtyName = escapeForAppleScript(ttyName);
 
     const script = `
         tell application "iTerm2"
@@ -179,7 +266,7 @@ function injectViaAppleScript(ptyPath, command) {
             repeat with aWindow in windows
                 repeat with aTab in tabs of aWindow
                     repeat with aSession in sessions of aTab
-                        if tty of aSession contains "${ttyName}" then
+                        if tty of aSession contains "${escapedTtyName}" then
                             tell aSession
                                 select
                                 write text "${escapedCommand}"
@@ -193,7 +280,8 @@ function injectViaAppleScript(ptyPath, command) {
         end tell
     `;
 
-    const result = execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
+    // Use execFileSync with osascript to avoid shell injection
+    const result = execFileSync('osascript', ['-e', script], {
         encoding: 'utf8',
         timeout: 5000
     }).trim();
@@ -207,9 +295,23 @@ function injectViaAppleScript(ptyPath, command) {
 }
 
 async function processCommand(chatId, token, command) {
+    // Validate token format
+    const validToken = validateToken(token);
+    if (!validToken) {
+        await sendMessage(chatId, '❌ Invalid token format.');
+        return;
+    }
+
+    // Validate command
+    const commandValidation = validateCommand(command);
+    if (!commandValidation.valid) {
+        await sendMessage(chatId, `❌ Invalid command: ${commandValidation.error}`);
+        return;
+    }
+
     try {
-        injectCommand(token, command);
-        log(`Command sent - Token: ${token}, Command: ${command}`);
+        injectCommand(validToken, commandValidation.command);
+        log(`Command sent - Token: ${validToken}, Command: ${commandValidation.command}`);
     } catch (err) {
         await sendMessage(chatId, `❌ Failed: ${err.message}`);
         log(`Error: ${err.message}`);
@@ -277,10 +379,13 @@ async function handleMessage(message) {
     // Reply to notification - extract token from buttons
     if (message.reply_to_message?.reply_markup?.inline_keyboard) {
         const buttons = message.reply_to_message.reply_markup.inline_keyboard;
-        if (buttons[0]?.[0]?.callback_data?.startsWith('quick:')) {
-            const token = buttons[0][0].callback_data.split(':')[1];
-            await processCommand(chatId, token, text);
-            return;
+        const callbackData = buttons[0]?.[0]?.callback_data;
+        if (callbackData) {
+            const parsed = parseCallbackData(callbackData);
+            if (parsed.prefix === 'quick' && parsed.token) {
+                await processCommand(chatId, parsed.token, text);
+                return;
+            }
         }
     }
 
@@ -294,17 +399,22 @@ async function handleMessage(message) {
 }
 
 async function handleCallbackQuery(callbackQuery) {
-    const chatId = callbackQuery.message.chat.id;
+    const chatId = callbackQuery.message?.chat?.id;
     const data = callbackQuery.data;
+
+    if (!chatId) {
+        log('Callback query missing chat ID');
+        return;
+    }
 
     await answerCallbackQuery(callbackQuery.id);
 
+    // Parse callback data safely using shared utility
+    const parsed = parseCallbackData(data);
+
     // quick:TOKEN:command
-    if (data.startsWith('quick:')) {
-        const parts = data.split(':');
-        const token = parts[1];
-        const command = parts.slice(2).join(':');
-        await processCommand(chatId, token, command);
+    if (parsed.prefix === 'quick' && parsed.token && parsed.command) {
+        await processCommand(chatId, parsed.token, parsed.command);
     }
 }
 

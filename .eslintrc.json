@@ -1,0 +1,48 @@
+{
+  "env": {
+    "node": true,
+    "es2021": true
+  },
+  "extends": [
+    "eslint:recommended"
+  ],
+  "plugins": [
+    "security",
+    "no-unsanitized"
+  ],
+  "parserOptions": {
+    "ecmaVersion": 2021
+  },
+  "rules": {
+    "security/detect-child-process": "warn",
+    "security/detect-eval-with-expression": "error",
+    "security/detect-non-literal-fs-filename": "warn",
+    "security/detect-non-literal-require": "warn",
+    "security/detect-object-injection": "warn",
+    "security/detect-possible-timing-attacks": "warn",
+    "security/detect-unsafe-regex": "error",
+    "security/detect-buffer-noassert": "error",
+    "security/detect-no-csrf-before-method-override": "error",
+    "security/detect-pseudoRandomBytes": "warn",
+    "no-unsanitized/method": "error",
+    "no-unsanitized/property": "error",
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error",
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-console": "off",
+    "eqeqeq": ["error", "always"],
+    "curly": ["error", "all"],
+    "no-var": "error",
+    "prefer-const": "warn",
+    "no-throw-literal": "error",
+    "no-return-await": "warn",
+    "require-await": "warn"
+  },
+  "ignorePatterns": [
+    "node_modules/",
+    "*.min.js",
+    "dist/",
+    "coverage/"
+  ]
+}

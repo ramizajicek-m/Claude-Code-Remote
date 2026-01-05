@@ -113,6 +113,8 @@ function cleanEmailText(text = '') {
     
     for (const line of lines) {
         // Detect quoted content (more comprehensive detection)
+        // Use regex for year pattern to avoid hardcoding specific years
+        const yearPattern = /on 20\d{2}.*wrote:/i;
         if (line.includes('-----Original Message-----') ||
             line.includes('--- Original Message ---') ||
             line.includes('at') && line.includes('wrote:') ||
@@ -121,7 +123,7 @@ function cleanEmailText(text = '') {
             line.includes('Session ID:') ||
             line.includes(`<${process.env.SMTP_USER}>`) ||
             line.includes('Claude-Code-Remote Notification System') ||
-            line.includes('on 2025') && line.includes('wrote:') ||
+            yearPattern.test(line) ||  // Matches "on 2024", "on 2025", "on 2026", etc.
             line.match(/^>.*/) ||  // Quote lines start with >
             line.includes('From:') && line.includes('@') ||
             line.includes('To:') && line.includes('@') ||
@@ -161,9 +163,11 @@ function cleanEmailText(text = '') {
         }
         
         // Skip remaining email quotes
+        // Use regex for year pattern to avoid hardcoding specific years
+        const skipYearPattern = /on 20\d{2}/i;
         if (trimmedLine.includes('Claude-Code-Remote Notification System') ||
             trimmedLine.includes(`<${process.env.SMTP_USER}>`) ||
-            trimmedLine.includes('on 2025')) {
+            skipYearPattern.test(trimmedLine)) {
             continue;
         }
         
@@ -269,27 +273,33 @@ async function injectCommandRemote(token, command) {
 }
 
 // Try automatic paste to active window
+// Security: Uses execFile with -e flag to avoid shell injection
 async function tryAutoPaste(command) {
+    const { escapeForAppleScript } = require('../utils/webhook-utils');
+
     return new Promise((resolve) => {
-        // First copy command to clipboard
-        const { spawn } = require('child_process');
+        // First copy command to clipboard using spawn (safe)
+        const { spawn, execFile } = require('child_process');
         const pbcopy = spawn('pbcopy');
         pbcopy.stdin.write(command);
         pbcopy.stdin.end();
-        
+
         pbcopy.on('close', (code) => {
             if (code !== 0) {
                 resolve({ success: false, error: 'clipboard_copy_failed' });
                 return;
             }
-            
-            // Execute AppleScript auto-paste
+
+            // Escape command for AppleScript (safe string escaping)
+            const escapedCommand = escapeForAppleScript(command);
+
+            // Execute AppleScript auto-paste using execFile (safe - no shell interpolation)
             const autoScript = `
             tell application "System Events"
                 set claudeApps to {"Claude", "Claude Code", "Terminal", "iTerm2", "iTerm"}
                 set targetApp to null
                 set targetName to ""
-                
+
                 repeat with appName in claudeApps
                     try
                         if application process appName exists then
@@ -299,18 +309,18 @@ async function tryAutoPaste(command) {
                         end if
                     end try
                 end repeat
-                
+
                 if targetApp is not null then
                     set frontmost of targetApp to true
                     delay 0.8
-                    
+
                     repeat 10 times
                         if frontmost of targetApp then exit repeat
                         delay 0.1
                     end repeat
-                    
+
                     if targetName is in {"Terminal", "iTerm2", "iTerm"} then
-                        keystroke "${command.replace(/"/g, '\\"')}"
+                        keystroke "${escapedCommand}"
                         delay 0.3
                         keystroke return
                         return "terminal_typed"
@@ -327,16 +337,16 @@ async function tryAutoPaste(command) {
                 end if
             end tell
             `;
-            
-            const { exec } = require('child_process');
-            exec(`osascript -e '${autoScript}'`, (error, stdout, stderr) => {
+
+            // Use execFile with -e flag to pass script as argument (safe)
+            execFile('osascript', ['-e', autoScript], { timeout: 10000 }, (error, stdout, stderr) => {
                 if (error) {
                     resolve({ success: false, error: error.message });
                     return;
                 }
-                
+
                 const result = stdout.trim();
-                
+
                 switch(result) {
                     case 'terminal_typed':
                         resolve({ success: true, method: 'Terminal direct input' });
@@ -356,28 +366,32 @@ async function tryAutoPaste(command) {
 }
 
 // Fallback to clipboard + strong reminder
+// Security: Uses execFile with -e flag to avoid shell injection
 async function fallbackToClipboard(command) {
+    const { escapeForAppleScript } = require('../utils/webhook-utils');
+
     return new Promise((resolve) => {
-        // Copy to clipboard
-        const { spawn } = require('child_process');
+        // Copy to clipboard using spawn (safe)
+        const { spawn, execFile } = require('child_process');
         const pbcopy = spawn('pbcopy');
         pbcopy.stdin.write(command);
         pbcopy.stdin.end();
-        
+
         pbcopy.on('close', (code) => {
             if (code !== 0) {
                 resolve(false);
                 return;
             }
-            
+
             // Send strong reminder notification
+            // Escape and truncate for safe display in notification
             const shortCommand = command.length > 30 ? command.substring(0, 30) + '...' : command;
-            const notificationScript = `
-                display notification "🚨 Email command auto-copied! Please paste and execute in Claude Code immediately (Cmd+V)" with title "TaskPing Auto-Injection" subtitle "${shortCommand.replace(/"/g, '\\"')}" sound name "Basso"
-            `;
-            
-            const { exec } = require('child_process');
-            exec(`osascript -e '${notificationScript}'`, (error) => {
+            const escapedShortCommand = escapeForAppleScript(shortCommand);
+
+            const notificationScript = `display notification "Email command auto-copied! Please paste and execute in Claude Code immediately (Cmd+V)" with title "TaskPing Auto-Injection" subtitle "${escapedShortCommand}" sound name "Basso"`;
+
+            // Use execFile with -e flag to pass script as argument (safe)
+            execFile('osascript', ['-e', notificationScript], { timeout: 5000 }, (error) => {
                 if (error) {
                     log.warn({ error: error.message }, 'Failed to send notification');
                 } else {

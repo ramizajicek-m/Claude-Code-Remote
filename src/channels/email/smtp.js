@@ -9,8 +9,7 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
 const TmuxMonitor = require('../../utils/tmux-monitor');
-const { execSync } = require('child_process');
-const { generateToken } = require('../../utils/shared');
+const { generateToken, getCurrentTmuxSession } = require('../../utils/shared');
 
 class EmailChannel extends NotificationChannel {
     constructor(config = {}) {
@@ -78,18 +77,7 @@ class EmailChannel extends NotificationChannel {
     }
 
     _getCurrentTmuxSession() {
-        try {
-            // Try to get current tmux session
-            const tmuxSession = execSync('tmux display-message -p "#S"', { 
-                encoding: 'utf8',
-                stdio: ['ignore', 'pipe', 'ignore']
-            }).trim();
-            
-            return tmuxSession || null;
-        } catch (error) {
-            // Not in a tmux session or tmux not available
-            return null;
-        }
+        return getCurrentTmuxSession();
     }
 
     async _sendImpl(notification) {
