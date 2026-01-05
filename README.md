@@ -110,6 +110,25 @@ This app has two functions:
 1. **Notifications-only**: Get alerts, type responses manually (simple)
 2. **Full two-way via WSL**: Run Claude Code inside WSL for remote control (more setup)
 
+### What is WSL?
+
+**WSL (Windows Subsystem for Linux)** is a built-in Windows 10/11 feature that runs Linux inside Windows - no virtual machine needed.
+
+```
+┌─────────────────────────────┐
+│  Windows 10/11              │
+│  ┌───────────────────────┐  │
+│  │  Ubuntu (WSL)         │  │
+│  │  - Linux terminal     │  │
+│  │  - tmux available     │  │
+│  └───────────────────────┘  │
+└─────────────────────────────┘
+```
+
+**Why we need it:** The tool that injects commands into Claude (tmux) only runs on Linux/macOS. WSL gives Windows users access to tmux.
+
+**Important:** Claude Code itself runs natively on Windows - you don't need WSL just to use Claude Code. WSL is only needed if you want this app to *reply for you* from your phone.
+
 ## 🚀 Quick Start
 
 ### Choose Your Setup
