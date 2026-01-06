@@ -5,6 +5,7 @@
 
 const NotificationChannel = require('../base/channel');
 const axios = require('axios');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
@@ -54,11 +55,12 @@ class TelegramChannel extends NotificationChannel {
     }
 
     _generateToken() {
-        // Generate short Token (uppercase letters + numbers, 8 digits)
+        // Generate cryptographically secure token (uppercase letters + numbers, 8 chars)
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        const randomBytes = crypto.randomBytes(8);
         let token = '';
         for (let i = 0; i < 8; i++) {
-            token += chars.charAt(Math.floor(Math.random() * chars.length));
+            token += chars.charAt(randomBytes[i] % chars.length);
         }
         return token;
     }

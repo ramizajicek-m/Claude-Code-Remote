@@ -41,27 +41,51 @@ class TmuxInjector {
         });
     }
     
+    // Find claude CLI path dynamically
+    _findClaudePath() {
+        // Check environment variable first
+        if (process.env.CLAUDE_CLI_PATH) {
+            return process.env.CLAUDE_CLI_PATH;
+        }
+
+        // Try to find claude using 'which'
+        try {
+            const claudePath = require('child_process')
+                .execSync('which claude', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+                .trim();
+            if (claudePath) {
+                return claudePath;
+            }
+        } catch (error) {
+            // 'which' failed, claude not in PATH
+        }
+
+        // Fallback to just 'claude' and let the shell resolve it
+        return 'claude';
+    }
+
     // Create Claude tmux session
     async createClaudeSession() {
         return new Promise((resolve) => {
             // Use clauderun command to start Claude (without pre-filling any commands)
             const command = `tmux new-session -d -s ${this.sessionName} -c "${process.cwd()}" clauderun`;
-            
+
             this.log.info(`Creating tmux session with clauderun command: ${command}`);
-            
+
             exec(command, (error, stdout, stderr) => {
                 if (error) {
                     this.log.warn(`Failed to create tmux session with clauderun: ${error.message}`);
-                    // If clauderun fails, try using full path command
-                    this.log.info('Fallback to full path command...');
-                    const fallbackCommand = `tmux new-session -d -s ${this.sessionName} -c "${process.cwd()}" /Users/jessytsui/.nvm/versions/node/v18.17.0/bin/claude --dangerously-skip-permissions`;
-                    
+                    // If clauderun fails, try using dynamically found claude path
+                    this.log.info('Fallback to claude CLI...');
+                    const claudePath = this._findClaudePath();
+                    const fallbackCommand = `tmux new-session -d -s ${this.sessionName} -c "${process.cwd()}" ${claudePath}`;
+
                     exec(fallbackCommand, (fallbackError) => {
                         if (fallbackError) {
                             this.log.error(`Failed to create tmux session with fallback: ${fallbackError.message}`);
                             resolve({ success: false, error: fallbackError.message });
                         } else {
-                            this.log.info('Tmux Claude session created successfully (full path)');
+                            this.log.info('Tmux Claude session created successfully (claude CLI)');
                             setTimeout(() => {
                                 resolve({ success: true });
                             }, 3000);

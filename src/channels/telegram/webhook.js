@@ -52,17 +52,57 @@ class TelegramWebhookHandler {
         return options;
     }
 
+    /**
+     * Validate webhook request using Telegram's secret token
+     * @param {Object} req - Express request object
+     * @returns {boolean} Whether the request is valid
+     */
+    _validateWebhookRequest(req) {
+        const webhookSecret = this.config.webhookSecret || process.env.TELEGRAM_WEBHOOK_SECRET;
+
+        // If no secret is configured, log a warning but allow the request
+        // This maintains backward compatibility while encouraging security
+        if (!webhookSecret) {
+            this.logger.warn('Webhook secret not configured - requests are not being validated. Set TELEGRAM_WEBHOOK_SECRET for security.');
+            return true;
+        }
+
+        const receivedToken = req.headers['x-telegram-bot-api-secret-token'];
+
+        if (!receivedToken) {
+            this.logger.warn('Webhook request missing secret token header');
+            return false;
+        }
+
+        // Use timing-safe comparison to prevent timing attacks
+        if (receivedToken.length !== webhookSecret.length) {
+            return false;
+        }
+
+        return crypto.timingSafeEqual(
+            Buffer.from(receivedToken),
+            Buffer.from(webhookSecret)
+        );
+    }
+
     async _handleWebhook(req, res) {
         try {
+            // Validate webhook request origin
+            if (!this._validateWebhookRequest(req)) {
+                this.logger.warn('Invalid webhook request - signature validation failed');
+                res.status(401).send('Unauthorized');
+                return;
+            }
+
             const update = req.body;
-            
+
             // Handle different update types
             if (update.message) {
                 await this._handleMessage(update.message);
             } else if (update.callback_query) {
                 await this._handleCallbackQuery(update.callback_query);
             }
-            
+
             res.status(200).send('OK');
         } catch (error) {
             this.logger.error('Webhook handling error:', error.message);
@@ -315,12 +355,24 @@ class TelegramWebhookHandler {
 
     async setWebhook(webhookUrl) {
         try {
+            const webhookSecret = this.config.webhookSecret || process.env.TELEGRAM_WEBHOOK_SECRET;
+
+            const webhookConfig = {
+                url: webhookUrl,
+                allowed_updates: ['message', 'callback_query']
+            };
+
+            // Include secret token for webhook validation if configured
+            if (webhookSecret) {
+                webhookConfig.secret_token = webhookSecret;
+                this.logger.info('Webhook secret token configured for validation');
+            } else {
+                this.logger.warn('No webhook secret configured. Set TELEGRAM_WEBHOOK_SECRET for enhanced security.');
+            }
+
             const response = await axios.post(
                 `${this.apiBaseUrl}/bot${this.config.botToken}/setWebhook`,
-                {
-                    url: webhookUrl,
-                    allowed_updates: ['message', 'callback_query']
-                },
+                webhookConfig,
                 this._getNetworkOptions()
             );
 
