@@ -4,8 +4,9 @@
  */
 
 const NotificationChannel = require('../base/channel');
-const { execSync, spawn } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const path = require('path');
+const { escapeForAppleScript } = require('../../utils/shared');
 
 class DesktopChannel extends NotificationChannel {
     constructor(config = {}) {
@@ -41,16 +42,24 @@ class DesktopChannel extends NotificationChannel {
 
     _sendMacOS(title, message, sound) {
         try {
-            // Try terminal-notifier first
+            const timeout = parseInt(process.env.NOTIFICATION_TIMEOUT) || 3000;
+
+            // Try terminal-notifier first using execFileSync (safe - no shell interpolation)
             try {
-                const cmd = `terminal-notifier -title "${title}" -message "${message}" -sound "${sound}" -group "claude-code-remote"`;
-                execSync(cmd, { timeout: parseInt(process.env.NOTIFICATION_TIMEOUT) || 3000 });
+                execFileSync('terminal-notifier', [
+                    '-title', title,
+                    '-message', message,
+                    '-sound', sound,
+                    '-group', 'claude-code-remote'
+                ], { timeout });
                 return true;
             } catch (e) {
-                // Fallback to osascript
-                const script = `display notification "${message}" with title "${title}"`;
-                execSync(`osascript -e '${script}'`, { timeout: parseInt(process.env.NOTIFICATION_TIMEOUT) || 3000 });
-                
+                // Fallback to osascript with proper escaping
+                const escapedTitle = escapeForAppleScript(title);
+                const escapedMessage = escapeForAppleScript(message);
+                const script = `display notification "${escapedMessage}" with title "${escapedTitle}"`;
+                execFileSync('osascript', ['-e', script], { timeout });
+
                 // Play sound separately
                 this._playSound(sound);
                 return true;
@@ -65,7 +74,11 @@ class DesktopChannel extends NotificationChannel {
         try {
             const notificationTimeout = parseInt(process.env.NOTIFICATION_TIMEOUT) || 3000;
             const displayTime = parseInt(process.env.NOTIFICATION_DISPLAY_TIME) || 10000;
-            execSync(`notify-send "${title}" "${message}" -t ${displayTime}`, { timeout: notificationTimeout });
+
+            // Use execFileSync with argument array (safe - no shell interpolation)
+            execFileSync('notify-send', [title, message, '-t', String(displayTime)], {
+                timeout: notificationTimeout
+            });
             this._playSound(sound);
             return true;
         } catch (error) {
@@ -76,17 +89,32 @@ class DesktopChannel extends NotificationChannel {
 
     _sendWindows(title, message, sound) {
         try {
+            // Escape for PowerShell - replace quotes and backticks
+            const escapeForPowerShell = (str) => {
+                if (!str) return '';
+                return str
+                    .replace(/`/g, '``')      // Escape backticks
+                    .replace(/"/g, '`"')      // Escape double quotes
+                    .replace(/\$/g, '`$')     // Escape dollar signs
+                    .replace(/\n/g, '`n')     // Escape newlines
+                    .replace(/\r/g, '`r');    // Escape carriage returns
+            };
+
+            const safeTitle = escapeForPowerShell(title);
+            const safeMessage = escapeForPowerShell(message);
+
             const script = `
             [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
             $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
             $xml = [xml] $template.GetXml()
-            $xml.toast.visual.binding.text[0].AppendChild($xml.CreateTextNode("${title}")) > $null
-            $xml.toast.visual.binding.text[1].AppendChild($xml.CreateTextNode("${message}")) > $null
+            $xml.toast.visual.binding.text[0].AppendChild($xml.CreateTextNode("${safeTitle}")) > $null
+            $xml.toast.visual.binding.text[1].AppendChild($xml.CreateTextNode("${safeMessage}")) > $null
             $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Claude-Code-Remote").Show($toast)
             `;
-            
-            execSync(`powershell -Command "${script}"`, { timeout: 5000 });
+
+            // Use execFileSync with argument array (safe - no shell interpolation)
+            execFileSync('powershell', ['-Command', script], { timeout: 5000 });
             this._playSound(sound);
             return true;
         } catch (error) {

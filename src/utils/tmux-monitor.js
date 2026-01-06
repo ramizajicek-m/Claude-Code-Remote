@@ -4,7 +4,8 @@
  * Based on the original email automation mechanism but adapted for real-time notifications
  */
 
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { sanitizeSessionName } = require('./shared');
 const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
@@ -114,11 +115,11 @@ class TmuxMonitor extends EventEmitter {
 
     _sessionExists() {
         try {
-            const sessions = execSync('tmux list-sessions -F "#{session_name}"', { 
+            const sessions = execFileSync('tmux', ['list-sessions', '-F', '#{session_name}'], {
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'ignore']
             }).trim().split('\n');
-            
+
             return sessions.includes(this.sessionName);
         } catch (error) {
             return false;
@@ -139,12 +140,19 @@ class TmuxMonitor extends EventEmitter {
 
     _captureCurrentContent() {
         try {
-            // Capture current pane content
-            const content = execSync(`tmux capture-pane -t ${this.sessionName} -p`, {
+            // Sanitize session name to prevent command injection
+            const safeSessionName = sanitizeSessionName(this.sessionName);
+            if (!safeSessionName) {
+                console.error('Invalid session name');
+                return '';
+            }
+
+            // Capture current pane content using execFileSync (safe)
+            const content = execFileSync('tmux', ['capture-pane', '-t', safeSessionName, '-p'], {
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'ignore']
             });
-            
+
             return content;
         } catch (error) {
             console.error('Error capturing tmux content:', error.message);
@@ -371,14 +379,23 @@ class TmuxMonitor extends EventEmitter {
      */
     startCapture(sessionName) {
         try {
-            const captureFile = path.join(this.captureDir, `${sessionName}.log`);
-            
-            // Start pipe-pane to capture all session output
-            execSync(`tmux pipe-pane -t ${sessionName} -o "cat >> ${captureFile}"`, { 
+            // Sanitize session name to prevent command injection
+            const safeSessionName = sanitizeSessionName(sessionName);
+            if (!safeSessionName) {
+                console.error('Invalid session name');
+                return null;
+            }
+
+            const captureFile = path.join(this.captureDir, `${safeSessionName}.log`);
+
+            // Start pipe-pane to capture all session output using execFileSync (safe)
+            // Note: pipe-pane -o with shell command is inherently shell-based,
+            // so we use a simple safe output file path
+            execFileSync('tmux', ['pipe-pane', '-t', safeSessionName, '-o', `cat >> ${captureFile}`], {
                 encoding: 'utf8',
-                stdio: 'ignore' 
+                stdio: 'ignore'
             });
-            
+
             return captureFile;
         } catch (error) {
             console.error(`Failed to start capture for session ${sessionName}:`, error.message);
@@ -392,9 +409,16 @@ class TmuxMonitor extends EventEmitter {
      */
     stopCapture(sessionName) {
         try {
-            execSync(`tmux pipe-pane -t ${sessionName}`, { 
+            // Sanitize session name to prevent command injection
+            const safeSessionName = sanitizeSessionName(sessionName);
+            if (!safeSessionName) {
+                console.error('Invalid session name');
+                return;
+            }
+
+            execFileSync('tmux', ['pipe-pane', '-t', safeSessionName], {
                 encoding: 'utf8',
-                stdio: 'ignore' 
+                stdio: 'ignore'
             });
         } catch (error) {
             console.error(`Failed to stop capture for session ${sessionName}:`, error.message);
@@ -435,8 +459,18 @@ class TmuxMonitor extends EventEmitter {
      */
     getFromTmuxBuffer(sessionName, lines = 200) {
         try {
-            // Capture the pane contents
-            const buffer = execSync(`tmux capture-pane -t ${sessionName} -p -S -${lines}`, {
+            // Sanitize session name to prevent command injection
+            const safeSessionName = sanitizeSessionName(sessionName);
+            if (!safeSessionName) {
+                console.error('Invalid session name');
+                return { userQuestion: '', claudeResponse: '' };
+            }
+
+            // Validate lines is a positive integer
+            const safeLines = Math.abs(parseInt(lines, 10)) || 200;
+
+            // Capture the pane contents using execFileSync (safe)
+            const buffer = execFileSync('tmux', ['capture-pane', '-t', safeSessionName, '-p', '-S', `-${safeLines}`], {
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'ignore']
             });
@@ -587,8 +621,18 @@ class TmuxMonitor extends EventEmitter {
      */
     getFullTraceFromTmuxBuffer(sessionName, lines = 1000) {
         try {
-            // Capture the pane contents
-            const buffer = execSync(`tmux capture-pane -t ${sessionName} -p -S -${lines}`, {
+            // Sanitize session name to prevent command injection
+            const safeSessionName = sanitizeSessionName(sessionName);
+            if (!safeSessionName) {
+                console.error('Invalid session name');
+                return '';
+            }
+
+            // Validate lines is a positive integer
+            const safeLines = Math.abs(parseInt(lines, 10)) || 1000;
+
+            // Capture the pane contents using execFileSync (safe)
+            const buffer = execFileSync('tmux', ['capture-pane', '-t', safeSessionName, '-p', '-S', `-${safeLines}`], {
                 encoding: 'utf8',
                 stdio: ['ignore', 'pipe', 'ignore']
             });
