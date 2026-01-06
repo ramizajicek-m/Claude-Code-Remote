@@ -5,6 +5,7 @@
 
 const { spawn } = require('child_process');
 const Logger = require('../core/logger');
+const { escapeForAppleScript } = require('../utils/shared');
 
 class ClaudeAutomation {
     constructor() {
@@ -214,11 +215,7 @@ class ClaudeAutomation {
 
         return new Promise((resolve) => {
             // More forceful approach, directly input text
-            const escapedCommand = command
-                .replace(/\\/g, '\\\\')
-                .replace(/"/g, '\\"')
-                .replace(/'/g, "\\'")
-                .replace(/\n/g, '\\n');
+            const escapedCommand = escapeForAppleScript(command);
 
             const script = `
                 tell application "System Events"

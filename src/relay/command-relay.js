@@ -13,6 +13,7 @@ const Logger = require('../core/logger');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { escapeForAppleScript } = require('../utils/webhook-utils');
 
 class CommandRelayService extends EventEmitter {
     constructor(config) {
@@ -342,7 +343,7 @@ class CommandRelayService extends EventEmitter {
     async _sendCommandViaMacOS(command) {
         return new Promise((resolve, reject) => {
             // Use AppleScript automation to input to active window
-            const escapedCommand = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "\\'");
+            const escapedCommand = escapeForAppleScript(command);
             const script = `
                 tell application "System Events"
                     -- Get current active application

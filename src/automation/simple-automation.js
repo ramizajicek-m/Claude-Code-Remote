@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const Logger = require('../core/logger');
+const { escapeForAppleScript } = require('../utils/shared');
 
 class SimpleAutomation {
     constructor() {
@@ -113,17 +114,19 @@ ${command}
         try {
             if (process.platform === 'darwin') {
                 const shortCommand = command.length > 50 ? command.substring(0, 50) + '...' : command;
-                
+                const escapedCommand = escapeForAppleScript(command);
+                const escapedShortCommand = escapeForAppleScript(shortCommand);
+
                 // Create detailed notification
                 const script = `
-                    set commandText to "${command.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"
-                    
-                    display notification "Command copied to clipboard, please paste to Claude Code" with title "TaskPing - New Email Command" subtitle "${shortCommand.replace(/"/g, '\\"')}" sound name "default"
-                    
+                    set commandText to "${escapedCommand}"
+
+                    display notification "Command copied to clipboard, please paste to Claude Code" with title "TaskPing - New Email Command" subtitle "${escapedShortCommand}" sound name "default"
+
                     -- Also show dialog (optional, user can cancel)
                     try
                         set userChoice to display dialog "Received new email command:" & return & return & commandText buttons {"Open Command File", "Cancel", "Pasted"} default button "Pasted" with title "TaskPing Email Relay" giving up after 10
-                        
+
                         if button returned of userChoice is "Open Command File" then
                             do shell script "open -t '${this.commandFile}'"
                         end if
@@ -163,7 +166,8 @@ ${command}
     async _sendSimpleNotification(command) {
         try {
             const shortCommand = command.length > 50 ? command.substring(0, 50) + '...' : command;
-            const script = `display notification "Command: ${shortCommand.replace(/"/g, '\\"')}" with title "TaskPing - Email Command" sound name "default"`;
+            const escapedShortCommand = escapeForAppleScript(shortCommand);
+            const script = `display notification "Command: ${escapedShortCommand}" with title "TaskPing - Email Command" sound name "default"`;
             
             const osascript = spawn('osascript', ['-e', script]);
             osascript.on('close', () => {
