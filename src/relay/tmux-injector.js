@@ -44,38 +44,43 @@ class TmuxInjector {
 
     /**
      * Check if tmux is installed
-     * @returns {Promise<boolean>} True if tmux is available
+     * @returns {boolean} True if tmux is available
      */
-    async checkTmuxAvailable() {
-        return new Promise((resolve) => {
-            try {
-                execFileSync('which', ['tmux'], {
-                    encoding: 'utf8',
-                    stdio: ['ignore', 'pipe', 'ignore']
-                });
-                resolve(true);
-            } catch (error) {
-                resolve(false);
-            }
-        });
+    checkTmuxAvailable() {
+        try {
+            execFileSync('which', ['tmux'], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'ignore']
+            });
+            return true;
+        } catch (error) {
+            return false;
+        }
     }
 
     /**
      * Check if Claude tmux session exists
-     * @returns {Promise<boolean>} True if session exists
+     * @returns {boolean} True if session exists
      */
-    async checkClaudeSession() {
-        return new Promise((resolve) => {
-            try {
-                execFileSync('tmux', ['has-session', '-t', this.sessionName], {
-                    encoding: 'utf8',
-                    stdio: ['ignore', 'pipe', 'ignore']
-                });
-                resolve(true);
-            } catch (error) {
-                resolve(false);
-            }
-        });
+    checkClaudeSession() {
+        try {
+            execFileSync('tmux', ['has-session', '-t', this.sessionName], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'ignore']
+            });
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    /**
+     * Helper to create a delay promise
+     * @param {number} ms - Milliseconds to wait
+     * @returns {Promise<void>}
+     */
+    _delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     /**
@@ -83,54 +88,50 @@ class TmuxInjector {
      * @returns {Promise<{success: boolean, error?: string}>}
      */
     async createClaudeSession() {
-        return new Promise((resolve) => {
-            const cwd = process.cwd();
+        const cwd = process.cwd();
 
-            this.log.info(`Creating tmux session: ${this.sessionName} in ${cwd}`);
+        this.log.info(`Creating tmux session: ${this.sessionName} in ${cwd}`);
+
+        try {
+            // Try with clauderun first
+            execFileSync('tmux', [
+                'new-session', '-d',
+                '-s', this.sessionName,
+                '-c', cwd,
+                'clauderun'
+            ], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+
+            this.log.info('Tmux Claude session created successfully (clauderun)');
+            // Wait for Claude initialization
+            await this._delay(3000);
+            return { success: true };
+        } catch (error) {
+            this.log.warn(`Failed to create tmux session with clauderun: ${error.message}`);
+            this.log.info('Fallback to claude from PATH...');
 
             try {
-                // Try with clauderun first
+                // Fallback to claude
                 execFileSync('tmux', [
                     'new-session', '-d',
                     '-s', this.sessionName,
                     '-c', cwd,
-                    'clauderun'
+                    'claude'
                 ], {
                     encoding: 'utf8',
                     stdio: ['ignore', 'pipe', 'pipe']
                 });
 
-                this.log.info('Tmux Claude session created successfully (clauderun)');
-                // Wait for Claude initialization
-                setTimeout(() => {
-                    resolve({ success: true });
-                }, 3000);
-            } catch (error) {
-                this.log.warn(`Failed to create tmux session with clauderun: ${error.message}`);
-                this.log.info('Fallback to claude from PATH...');
-
-                try {
-                    // Fallback to claude
-                    execFileSync('tmux', [
-                        'new-session', '-d',
-                        '-s', this.sessionName,
-                        '-c', cwd,
-                        'claude'
-                    ], {
-                        encoding: 'utf8',
-                        stdio: ['ignore', 'pipe', 'pipe']
-                    });
-
-                    this.log.info('Tmux Claude session created successfully (claude)');
-                    setTimeout(() => {
-                        resolve({ success: true });
-                    }, 3000);
-                } catch (fallbackError) {
-                    this.log.error(`Failed to create tmux session with fallback: ${fallbackError.message}`);
-                    resolve({ success: false, error: fallbackError.message });
-                }
+                this.log.info('Tmux Claude session created successfully (claude)');
+                await this._delay(3000);
+                return { success: true };
+            } catch (fallbackError) {
+                this.log.error(`Failed to create tmux session with fallback: ${fallbackError.message}`);
+                return { success: false, error: fallbackError.message };
             }
-        });
+        }
     }
 
     /**
@@ -156,61 +157,56 @@ class TmuxInjector {
      * @returns {Promise<{success: boolean, error?: string}>}
      */
     async injectCommand(command) {
-        return new Promise(async (resolve) => {
-            try {
-                this.log.debug(`Injecting command via tmux: ${command}`);
+        try {
+            this.log.debug(`Injecting command via tmux: ${command}`);
 
-                // 1. Clear input field (Ctrl-U)
-                if (!this._sendKeysSync(['C-u'])) {
-                    this.log.error('Failed to clear input');
-                    resolve({ success: false, error: 'Failed to clear input' });
-                    return;
-                }
-
-                // Brief wait
-                await new Promise(r => setTimeout(r, 200));
-
-                // 2. Send command text
-                // Note: tmux send-keys handles the text directly without shell interpretation
-                if (!this._sendKeysSync([command])) {
-                    this.log.error('Failed to send command');
-                    resolve({ success: false, error: 'Failed to send command' });
-                    return;
-                }
-
-                // Brief wait
-                await new Promise(r => setTimeout(r, 200));
-
-                // 3. Send enter (Ctrl-M or Enter)
-                if (!this._sendKeysSync(['C-m'])) {
-                    this.log.error('Failed to send enter');
-                    resolve({ success: false, error: 'Failed to send enter' });
-                    return;
-                }
-
-                this.log.debug('Command sent successfully in 3 steps');
-
-                // Brief wait for command sending
-                await new Promise(r => setTimeout(r, 1000));
-
-                // Check if command is already displayed in Claude
-                const capture = await this.getCaptureOutput();
-                if (capture.success) {
-                    this.log.debug(`Claude state after injection: ${capture.output.slice(-200).replace(/\n/g, ' ')}`);
-                }
-
-                // Wait and check if confirmation is needed
-                await this.handleConfirmations();
-
-                // Record injection log
-                this.logInjection(command);
-
-                resolve({ success: true });
-
-            } catch (error) {
-                resolve({ success: false, error: error.message });
+            // 1. Clear input field (Ctrl-U)
+            if (!this._sendKeysSync(['C-u'])) {
+                this.log.error('Failed to clear input');
+                return { success: false, error: 'Failed to clear input' };
             }
-        });
+
+            // Brief wait
+            await this._delay(200);
+
+            // 2. Send command text
+            // Note: tmux send-keys handles the text directly without shell interpretation
+            if (!this._sendKeysSync([command])) {
+                this.log.error('Failed to send command');
+                return { success: false, error: 'Failed to send command' };
+            }
+
+            // Brief wait
+            await this._delay(200);
+
+            // 3. Send enter (Ctrl-M or Enter)
+            if (!this._sendKeysSync(['C-m'])) {
+                this.log.error('Failed to send enter');
+                return { success: false, error: 'Failed to send enter' };
+            }
+
+            this.log.debug('Command sent successfully in 3 steps');
+
+            // Brief wait for command sending
+            await this._delay(1000);
+
+            // Check if command is already displayed in Claude
+            const capture = this.getCaptureOutput();
+            if (capture.success) {
+                this.log.debug(`Claude state after injection: ${capture.output.slice(-200).replace(/\n/g, ' ')}`);
+            }
+
+            // Wait and check if confirmation is needed
+            await this.handleConfirmations();
+
+            // Record injection log
+            this.logInjection(command);
+
+            return { success: true };
+
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
     }
 
     /**
@@ -224,10 +220,10 @@ class TmuxInjector {
             attempts++;
 
             // Wait for Claude processing
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            await this._delay(1500);
 
             // Get current screen content
-            const capture = await this.getCaptureOutput();
+            const capture = this.getCaptureOutput();
 
             if (!capture.success) {
                 break;
@@ -244,12 +240,12 @@ class TmuxInjector {
 
                 // Select "2. Yes, and don't ask again" to avoid future confirmation dialogs
                 this._sendKeysSync(['2']);
-                await new Promise(r => setTimeout(r, 300));
+                await this._delay(300);
                 this._sendKeysSync(['Enter']);
                 this.log.info('Auto-confirmation sent (option 2)');
 
                 // Wait for confirmation to take effect
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                await this._delay(2000);
                 continue;
             }
 
@@ -258,7 +254,7 @@ class TmuxInjector {
                 this.log.info(`Detected single option confirmation, selecting option 1 (attempt ${attempts})`);
 
                 this._sendKeysSync(['1']);
-                await new Promise(r => setTimeout(r, 300));
+                await this._delay(300);
                 this._sendKeysSync(['Enter']);
                 this.log.info('Auto-confirmation sent (option 1)');
 
@@ -270,7 +266,7 @@ class TmuxInjector {
                 this.log.info(`Detected y/n prompt, sending 'y' (attempt ${attempts})`);
 
                 this._sendKeysSync(['y']);
-                await new Promise(r => setTimeout(r, 300));
+                await this._delay(300);
                 this._sendKeysSync(['Enter']);
                 this.log.info('Auto-confirmation sent (y)');
 
@@ -316,14 +312,14 @@ class TmuxInjector {
             // If nothing detected, wait longer before checking again
             if (attempts < maxAttempts) {
                 this.log.info('No confirmation prompts detected, waiting longer...');
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                await this._delay(2000);
             }
         }
 
         this.log.info(`Confirmation handling completed after ${attempts} attempts`);
 
         // Final state check
-        const finalCapture = await this.getCaptureOutput();
+        const finalCapture = this.getCaptureOutput();
         if (finalCapture.success) {
             this.log.debug(`Final state: ${finalCapture.output.slice(-100).replace(/\n/g, ' ')}`);
         }
@@ -331,22 +327,20 @@ class TmuxInjector {
 
     /**
      * Get tmux session output
-     * @returns {Promise<{success: boolean, output?: string, error?: string}>}
+     * @returns {{success: boolean, output?: string, error?: string}}
      */
-    async getCaptureOutput() {
-        return new Promise((resolve) => {
-            try {
-                const output = execFileSync('tmux', [
-                    'capture-pane', '-t', this.sessionName, '-p'
-                ], {
-                    encoding: 'utf8',
-                    stdio: ['ignore', 'pipe', 'pipe']
-                });
-                resolve({ success: true, output });
-            } catch (error) {
-                resolve({ success: false, error: error.message });
-            }
-        });
+    getCaptureOutput() {
+        try {
+            const output = execFileSync('tmux', [
+                'capture-pane', '-t', this.sessionName, '-p'
+            ], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+            return { success: true, output };
+        } catch (error) {
+            return { success: false, error: error.message };
+        }
     }
 
     /**
@@ -354,26 +348,23 @@ class TmuxInjector {
      * @returns {Promise<{success: boolean, error?: string}>}
      */
     async restartClaudeSession() {
-        return new Promise(async (resolve) => {
-            this.log.info('Restarting Claude tmux session...');
+        this.log.info('Restarting Claude tmux session...');
 
-            // Kill existing session
-            try {
-                execFileSync('tmux', ['kill-session', '-t', this.sessionName], {
-                    encoding: 'utf8',
-                    stdio: ['ignore', 'pipe', 'pipe']
-                });
-            } catch (error) {
-                // Session might not exist, that's okay
-            }
+        // Kill existing session
+        try {
+            execFileSync('tmux', ['kill-session', '-t', this.sessionName], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+        } catch (error) {
+            // Session might not exist, that's okay
+        }
 
-            // Wait a moment
-            await new Promise(r => setTimeout(r, 1000));
+        // Wait a moment
+        await this._delay(1000);
 
-            // Create new session
-            const result = await this.createClaudeSession();
-            resolve(result);
-        });
+        // Create new session
+        return this.createClaudeSession();
     }
 
     /**
@@ -387,15 +378,12 @@ class TmuxInjector {
             this.log.debug(`Starting tmux command injection (Token: ${token})`);
 
             // 1. Check if tmux is available
-            const tmuxAvailable = await this.checkTmuxAvailable();
-            if (!tmuxAvailable) {
+            if (!this.checkTmuxAvailable()) {
                 return { success: false, error: 'tmux_not_installed', message: 'Need to install tmux: brew install tmux' };
             }
 
             // 2. Check if Claude session exists
-            const sessionExists = await this.checkClaudeSession();
-
-            if (!sessionExists) {
+            if (!this.checkClaudeSession()) {
                 this.log.warn('Claude tmux session not found, creating new session...');
                 const createResult = await this.createClaudeSession();
 
@@ -409,7 +397,7 @@ class TmuxInjector {
 
             if (injectResult.success) {
                 // 4. Send success notification
-                await this.sendSuccessNotification(command);
+                this.sendSuccessNotification(command);
 
                 return {
                     success: true,
@@ -482,33 +470,31 @@ class TmuxInjector {
 
     /**
      * Get session status information
-     * @returns {Promise<{exists: boolean, info?: string, name?: string}>}
+     * @returns {{exists: boolean, info?: string, name?: string}}
      */
-    async getSessionInfo() {
-        return new Promise((resolve) => {
-            try {
-                const output = execFileSync('tmux', ['list-sessions'], {
-                    encoding: 'utf8',
-                    stdio: ['ignore', 'pipe', 'pipe']
-                });
+    getSessionInfo() {
+        try {
+            const output = execFileSync('tmux', ['list-sessions'], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
 
-                // Filter for our session
-                const lines = output.split('\n');
-                const sessionLine = lines.find(line => line.includes(this.sessionName));
+            // Filter for our session
+            const lines = output.split('\n');
+            const sessionLine = lines.find(line => line.includes(this.sessionName));
 
-                if (sessionLine) {
-                    resolve({
-                        exists: true,
-                        info: sessionLine.trim(),
-                        name: this.sessionName
-                    });
-                } else {
-                    resolve({ exists: false });
-                }
-            } catch (error) {
-                resolve({ exists: false });
+            if (sessionLine) {
+                return {
+                    exists: true,
+                    info: sessionLine.trim(),
+                    name: this.sessionName
+                };
+            } else {
+                return { exists: false };
             }
-        });
+        } catch (error) {
+            return { exists: false };
+        }
     }
 }
 
